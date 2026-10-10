@@ -2755,6 +2755,28 @@ class Scheduler(SchedulerInterface):
         logger.info("setting pause state to %s", pause_state.name)
         self._pause_state = pause_state
 
+    def set_max_num_active_reqs(self, limit: int) -> None:
+        """Set the admission limit without changing runner capacity.
+
+        Existing RUNNING requests drain normally when the limit is lowered.
+        Call on the scheduler's owning thread between scheduling steps.
+
+        Args:
+            limit: Maximum number of active request slots to admit.
+
+        Raises:
+            ValueError: If limit is not an integer in [1, max_num_running_reqs].
+
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError("max_num_active_reqs must be an integer")
+        if not 1 <= limit <= self.max_num_running_reqs:
+            raise ValueError(
+                f"max_num_active_reqs must be between 1 and "
+                f"max_num_running_reqs ({self.max_num_running_reqs}), got {limit}"
+            )
+        self.max_num_active_reqs = limit
+
     def _request_blocks_can_be_freed(self, request: Request) -> bool:
         # We must defer freeing blocks if an async kv connector may
         # write to them immediately (not ordered with GPU stream).

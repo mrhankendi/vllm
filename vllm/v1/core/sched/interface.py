@@ -211,6 +211,12 @@ class SchedulerInterface(ABC):
     def set_pause_state(self, pause_state: PauseState) -> None:
         raise NotImplementedError
 
+    def set_max_num_active_reqs(self, limit: int) -> None:
+        """Set the admission limit without resizing static runner capacity."""
+        raise NotImplementedError(
+            "This scheduler does not support runtime admission limits"
+        )
+
     @abstractmethod
     def reset_prefix_cache(
         self, reset_running_requests: bool = False, reset_connector: bool = False

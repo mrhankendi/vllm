@@ -224,6 +224,88 @@ def test_max_num_active_seqs_caps_admission():
     assert scheduler.max_num_running_reqs == 16
 
 
+@pytest.mark.parametrize("async_scheduling", [False, True])
+def test_increase_active_limit_admits_waiting_requests(async_scheduling: bool):
+    scheduler = create_scheduler(
+        max_num_seqs=128, max_num_active_seqs=16, async_scheduling=async_scheduling
+    )
+    for request in create_requests(num_requests=80):
+        scheduler.add_request(request)
+    assert len(scheduler.schedule().scheduled_new_reqs) == 16
+
+    scheduler.set_max_num_active_reqs(64)
+    output = scheduler.schedule()
+
+    assert len(output.scheduled_new_reqs) == 48
+    assert len(scheduler.running) == 64
+    assert len(scheduler.waiting) == 16
+    assert not scheduler.schedule().scheduled_new_reqs
+    assert len(scheduler.running) == 64
+
+
+@pytest.mark.parametrize("async_scheduling", [False, True])
+def test_decrease_active_limit_drains_running_before_admission(async_scheduling: bool):
+    scheduler = create_scheduler(
+        max_num_seqs=128, max_num_active_seqs=64, async_scheduling=async_scheduling
+    )
+    requests = create_requests(num_requests=80)
+    for request in requests:
+        scheduler.add_request(request)
+    assert len(scheduler.schedule().scheduled_new_reqs) == 64
+    running = list(scheduler.running)
+    for request in running:
+        request.append_output_token_ids(100)
+
+    scheduler.set_max_num_active_reqs(16)
+    output = scheduler.schedule()
+
+    assert scheduler.running == running
+    assert all(request.status == RequestStatus.RUNNING for request in running)
+    assert all(request.num_preemptions == 0 for request in running)
+    assert set(output.num_scheduled_tokens) == {r.request_id for r in running}
+    assert not output.scheduled_new_reqs
+    assert len(scheduler.waiting) == 16
+
+    scheduler.finish_requests(
+        [request.request_id for request in running[:48]], RequestStatus.FINISHED_STOPPED
+    )
+    assert len(scheduler.running) == 16
+    assert not scheduler.schedule().scheduled_new_reqs
+
+    scheduler.finish_requests(running[48].request_id, RequestStatus.FINISHED_STOPPED)
+    assert len(scheduler.running) == 15
+    output = scheduler.schedule()
+    assert len(output.scheduled_new_reqs) == 1
+    assert len(scheduler.running) == 16
+    assert len(scheduler.waiting) == 15
+
+
+@pytest.mark.parametrize("limit", [0, -1, 129, True, 1.5, "16", None])
+def test_set_active_limit_rejects_invalid_values(limit):
+    scheduler = create_scheduler(max_num_seqs=128, max_num_active_seqs=16)
+
+    with pytest.raises(ValueError, match="max_num_active_reqs"):
+        scheduler.set_max_num_active_reqs(limit)
+
+    assert scheduler.max_num_active_reqs == 16
+
+
+@pytest.mark.parametrize("limit", [1, 128])
+def test_set_active_limit_preserves_static_capacity(limit: int):
+    scheduler = create_scheduler(max_num_seqs=128, max_num_active_seqs=16)
+    kv_cache_manager = scheduler.kv_cache_manager
+    num_blocks = scheduler.kv_cache_config.num_blocks
+
+    scheduler.set_max_num_active_reqs(limit)
+
+    assert scheduler.max_num_active_reqs == limit
+    assert scheduler.scheduler_config.max_num_active_seqs == 16
+    assert scheduler.scheduler_config.max_num_seqs == 128
+    assert scheduler.max_num_running_reqs == 128
+    assert scheduler.kv_cache_manager is kv_cache_manager
+    assert scheduler.kv_cache_config.num_blocks == num_blocks
+
+
 def _bind_hisparse_connector(scheduler):
     connector = object.__new__(HiSparseConnector)
     connector.connector_scheduler = HiSparseConnectorScheduler(async_speculative=False)

@@ -15,10 +15,13 @@ from functools import partial
 from inspect import isclass, signature
 from logging import DEBUG
 from multiprocessing.queues import Queue
-from typing import Any, TypeVar, cast, get_args
+from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args
 
 import msgspec
 import zmq
+
+if TYPE_CHECKING:
+    from vllm.platforms.power import PowerManager
 
 import vllm.envs as envs
 from vllm.config import ParallelConfig, VllmConfig
@@ -119,11 +122,14 @@ class EngineCore:
         log_stats: bool,
         executor_fail_callback: Callable | None = None,
         include_finished_set: bool = False,
+        power_manager: "PowerManager | None" = None,
     ):
         # plugins need to be loaded at the engine/scheduler level too
         from vllm.plugins import load_general_plugins
 
         load_general_plugins()
+
+        self.power_manager = power_manager
 
         self.vllm_config = vllm_config
         if not vllm_config.parallel_config.data_parallel_rank_local:
@@ -943,6 +949,47 @@ class EngineCore:
     def is_scheduler_paused(self) -> bool:
         """Return whether the scheduler is in any pause state."""
         return self.scheduler.pause_state != PauseState.UNPAUSED
+
+    def set_max_num_active_reqs(self, limit: int) -> None:
+        """Update the admission limit on the engine's owning thread."""
+        self.scheduler.set_max_num_active_reqs(limit)
+
+    def set_gpu_power_cap_w(self, watts: int) -> None:
+        """Set the per-GPU power cap in watts on the engine's owning thread."""
+        pm = self._get_power_manager()
+        pm.set_power_cap_w(watts)
+
+    def get_gpu_power_cap_w(self) -> int | None:
+        """Get the configured per-GPU power cap in watts."""
+        pm = self._get_power_manager()
+        return pm.get_power_cap_w()
+
+    def _get_power_manager(self) -> "PowerManager":
+        if self.power_manager is None:
+            from vllm.platforms import current_platform
+
+            if current_platform.is_cuda():
+                from vllm.platforms.power import NvmlPowerManager
+
+                physical_ids = self._get_physical_gpu_ids()
+                self.power_manager = NvmlPowerManager(device_ids=physical_ids)
+            else:
+                raise RuntimeError(
+                    f"GPU power management is not supported on platform "
+                    f"{current_platform.device_name}"
+                )
+        return self.power_manager
+
+    def _get_physical_gpu_ids(self) -> list[int]:
+        if self.vllm_config.parallel_config.assigned_physical_gpu_ids is not None:
+            return list(self.vllm_config.parallel_config.assigned_physical_gpu_ids)
+        from vllm.platforms import current_platform
+
+        local_world_size = self.vllm_config.parallel_config.local_world_size
+        return [
+            current_platform.device_id_to_physical_device_id(i)
+            for i in range(local_world_size)
+        ]
 
     def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None | Future:
         """Put the engine to sleep at the specified level.

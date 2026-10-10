@@ -201,6 +201,30 @@ class EngineCoreClient(ABC):
     def reset_encoder_cache(self) -> None:
         raise NotImplementedError
 
+    def set_max_num_active_reqs(self, limit: int) -> None:
+        """Set the admission limit; call between steps in in-process mode."""
+        raise NotImplementedError
+
+    async def set_max_num_active_reqs_async(self, limit: int) -> None:
+        """Set the admission limit through the engine utility transport."""
+        raise NotImplementedError
+
+    def set_gpu_power_cap_w(self, watts: int) -> None:
+        """Set the per-GPU power cap in watts."""
+        raise NotImplementedError
+
+    async def set_gpu_power_cap_w_async(self, watts: int) -> None:
+        """Set the per-GPU power cap in watts asynchronously."""
+        raise NotImplementedError
+
+    def get_gpu_power_cap_w(self) -> int | None:
+        """Get the configured per-GPU power cap in watts."""
+        raise NotImplementedError
+
+    async def get_gpu_power_cap_w_async(self) -> int | None:
+        """Get the configured per-GPU power cap in watts asynchronously."""
+        raise NotImplementedError
+
     def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
         raise NotImplementedError
 
@@ -428,6 +452,24 @@ class InprocClient(EngineCoreClient):
 
     def reset_encoder_cache(self) -> None:
         self.engine_core.reset_encoder_cache()
+
+    def set_max_num_active_reqs(self, limit: int) -> None:
+        self.engine_core.set_max_num_active_reqs(limit)
+
+    async def set_max_num_active_reqs_async(self, limit: int) -> None:
+        self.set_max_num_active_reqs(limit)
+
+    def set_gpu_power_cap_w(self, watts: int) -> None:
+        self.engine_core.set_gpu_power_cap_w(watts)
+
+    async def set_gpu_power_cap_w_async(self, watts: int) -> None:
+        self.set_gpu_power_cap_w(watts)
+
+    def get_gpu_power_cap_w(self) -> int | None:
+        return self.engine_core.get_gpu_power_cap_w()
+
+    async def get_gpu_power_cap_w_async(self) -> int | None:
+        return self.get_gpu_power_cap_w()
 
     def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
         if mode == "wait":
@@ -1055,6 +1097,21 @@ class SyncMPClient(MPClient):
     def reset_encoder_cache(self) -> None:
         self.call_utility("reset_encoder_cache")
 
+    def set_max_num_active_reqs(self, limit: int) -> None:
+        self.call_utility("set_max_num_active_reqs", limit)
+
+    def set_gpu_power_cap_w(self, watts: int) -> None:
+        self.call_utility("set_gpu_power_cap_w", watts)
+
+    async def set_gpu_power_cap_w_async(self, watts: int) -> None:
+        self.set_gpu_power_cap_w(watts)
+
+    def get_gpu_power_cap_w(self) -> int | None:
+        return self.call_utility("get_gpu_power_cap_w")
+
+    async def get_gpu_power_cap_w_async(self) -> int | None:
+        return self.get_gpu_power_cap_w()
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.call_utility("add_lora", lora_request)
 
@@ -1342,6 +1399,15 @@ class AsyncMPClient(MPClient):
 
     async def reset_encoder_cache_async(self) -> None:
         await self.call_utility_async("reset_encoder_cache")
+
+    async def set_max_num_active_reqs_async(self, limit: int) -> None:
+        await self.call_utility_async("set_max_num_active_reqs", limit)
+
+    async def set_gpu_power_cap_w_async(self, watts: int) -> None:
+        await self.call_utility_async("set_gpu_power_cap_w", watts)
+
+    async def get_gpu_power_cap_w_async(self) -> int | None:
+        return await self.call_utility_async("get_gpu_power_cap_w")
 
     async def sleep_async(self, level: int = 1, mode: PauseMode = "abort") -> None:
         await self.call_utility_async("sleep", level, mode)
