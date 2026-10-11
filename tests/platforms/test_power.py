@@ -191,6 +191,44 @@ def test_nvml_power_manager_permission_error_message():
 
     with (
         patch("vllm.utils.import_utils.import_pynvml", return_value=fake_pynvml),
+        patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="Denied")),
         pytest.raises(PermissionError, match="CAP_SYS_ADMIN"),
     ):
         nvml_mgr.set_power_cap_w(200)
+
+
+def test_nvml_power_manager_fallback_to_sudo_smi():
+    """Verify fallback to sudo nvidia-smi succeeds when NVML gives NoPermission."""
+    nvml_mgr = NvmlPowerManager(device_ids=[0])
+
+    from vllm.third_party.pynvml import NVMLError_NoPermission
+
+    fake_pynvml = MagicMock()
+    fake_pynvml.NVMLError_NoPermission = NVMLError_NoPermission
+    fake_pynvml.nvmlDeviceGetHandleByIndex.return_value = "handle_0"
+    fake_pynvml.nvmlDeviceGetPowerManagementLimitConstraints.return_value = [
+        150000,
+        350000,
+    ]
+    fake_pynvml.nvmlDeviceGetPowerManagementLimit.return_value = 250000
+    fake_pynvml.nvmlDeviceSetPowerManagementLimit.side_effect = NVMLError_NoPermission()
+    fake_pci = MagicMock()
+    fake_pci.busId = b"00000000:4A:00.0"
+    fake_pynvml.nvmlDeviceGetPciInfo.return_value = fake_pci
+
+    mock_proc = MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("vllm.utils.import_utils.import_pynvml", return_value=fake_pynvml),
+        patch("subprocess.run", return_value=mock_proc) as mock_run,
+    ):
+        nvml_mgr.set_power_cap_w(200)
+
+        mock_run.assert_called_once_with(
+            ["sudo", "-n", "nvidia-smi", "-i", "00000000:4A:00.0", "-pl", "200"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+

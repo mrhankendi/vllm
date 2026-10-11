@@ -126,3 +126,4 @@ cap = await async_engine_client.get_gpu_power_cap_w_async()
 
 > [!NOTE]
 > Setting actual hardware power caps via NVML at runtime may require administrative or root privileges (`nvidia-smi -pl <watts>`) on the GPU host, depending on driver configuration.
+

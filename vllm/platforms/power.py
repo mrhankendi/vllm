@@ -4,6 +4,7 @@
 import contextlib
 import math
 import os
+import subprocess
 from collections.abc import Sequence
 from contextlib import suppress
 from typing import Any, Protocol, runtime_checkable
@@ -253,17 +254,13 @@ class NvmlPowerManager:
             updated_devices: list[int] = []
             for dev_id, handle in handles.items():
                 try:
-                    pynvml.nvmlDeviceSetPowerManagementLimit(handle, watts_mw)
+                    self._set_device_power_limit(pynvml, handle, dev_id, watts)
                     updated_devices.append(dev_id)
-                except NVMLError_NoPermission as e:
+                except PermissionError as e:
                     rollback_err = self._rollback(
                         pynvml, handles, updated_devices, previous_limits_mw
                     )
-                    msg = (
-                        f"Failed to set power cap to {watts}W on GPU {dev_id}: "
-                        "NVML permission denied (requires root or "
-                        "CAP_SYS_ADMIN privileges)."
-                    )
+                    msg = str(e)
                     if rollback_err:
                         msg += f" Rollback error: {rollback_err}"
                     raise PermissionError(msg) from e
@@ -275,6 +272,66 @@ class NvmlPowerManager:
                     if rollback_err:
                         msg += f" Rollback error: {rollback_err}"
                     raise RuntimeError(msg) from e
+
+    def _set_device_power_limit(
+        self,
+        pynvml: Any,
+        handle: Any,
+        dev_id: int,
+        watts: int,
+    ) -> None:
+        watts_mw = watts * 1000
+        try:
+            pynvml.nvmlDeviceSetPowerManagementLimit(handle, watts_mw)
+            return
+        except NVMLError_NoPermission as e:
+            fallback_err = self._try_set_power_limit_via_sudo_smi(
+                pynvml, handle, dev_id, watts
+            )
+            if fallback_err is None:
+                return
+            msg = (
+                f"Failed to set power cap to {watts}W on GPU {dev_id}: "
+                "NVML permission denied (requires root or "
+                f"CAP_SYS_ADMIN privileges). Sudo fallback error: {fallback_err}"
+            )
+            raise PermissionError(msg) from e
+
+    def _try_set_power_limit_via_sudo_smi(
+        self,
+        pynvml: Any,
+        handle: Any,
+        dev_id: int,
+        watts: int,
+    ) -> str | None:
+        target = str(dev_id)
+        with suppress(Exception):
+            pci_info = pynvml.nvmlDeviceGetPciInfo(handle)
+            bus_id = pci_info.busId
+            if isinstance(bus_id, bytes):
+                bus_id = bus_id.decode("utf-8")
+            if bus_id:
+                target = bus_id
+
+        cmd = ["sudo", "-n", "nvidia-smi", "-i", target, "-pl", str(watts)]
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                logger.info(
+                    "Applied power cap %dW to GPU %s via sudo nvidia-smi",
+                    watts,
+                    target,
+                )
+                return None
+            return res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}"
+        except Exception as ex:
+            return str(ex)
 
     def _rollback(
         self,
@@ -288,8 +345,9 @@ class NvmlPowerManager:
             orig_mw = previous_limits_mw.get(dev_id)
             if orig_mw is None:
                 continue
+            orig_w = round(orig_mw / 1000.0)
             try:
-                pynvml.nvmlDeviceSetPowerManagementLimit(handles[dev_id], orig_mw)
+                self._set_device_power_limit(pynvml, handles[dev_id], dev_id, orig_w)
             except Exception as e:
                 rollback_failures.append(f"GPU {dev_id}: {e}")
         if rollback_failures:
